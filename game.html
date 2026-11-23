@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Neon Snake — built from one prompt</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #0a0a12; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: #e8e8f0; display: flex; flex-direction: column; align-items: center;
+    user-select: none;
+  }
+  header { width: 100%; max-width: 1080px; padding: 18px 24px 8px; text-align: center; }
+  h1 {
+    font-size: 44px; letter-spacing: 6px; font-weight: 800;
+    background: linear-gradient(90deg, #39ff88, #00e5ff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { color: #8a8aa3; font-size: 20px; margin-top: 4px; letter-spacing: 2px; }
+  .hud {
+    width: 100%; max-width: 1080px; display: flex; justify-content: space-between;
+    padding: 10px 28px; font-size: 30px; font-weight: 700;
+  }
+  .hud .label { color: #8a8aa3; font-size: 20px; font-weight: 600; letter-spacing: 2px; }
+  #score { color: #39ff88; }
+  #best { color: #ff4fd8; }
+  #stage { position: relative; width: 100%; max-width: 1080px; flex: 1; min-height: 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: rgba(10, 10, 18, 0.72); z-index: 5;
+  }
+  #overlay h2 { font-size: 56px; letter-spacing: 4px; color: #fff; }
+  #overlay p { font-size: 26px; color: #b9b9cc; margin-top: 14px; line-height: 1.5; }
+  #overlay .big { font-size: 34px; color: #39ff88; font-weight: 700; margin-top: 10px; }
+  #overlay.hidden { display: none; }
+  .pad {
+    width: 100%; max-width: 1080px; padding: 14px 0 26px;
+    display: grid; grid-template-columns: repeat(3, 96px); grid-template-rows: repeat(2, 96px);
+    gap: 12px; justify-content: center;
+  }
+  .pad button {
+    font-size: 44px; color: #e8e8f0; background: #171724; border: 2px solid #2c2c44;
+    border-radius: 18px; cursor: pointer;
+  }
+  .pad button:active { background: #39ff88; color: #0a0a12; }
+  .pad .up { grid-column: 2; grid-row: 1; }
+  .pad .left { grid-column: 1; grid-row: 2; }
+  .pad .down { grid-column: 2; grid-row: 2; }
+  .pad .right { grid-column: 3; grid-row: 2; }
+  footer { color: #55556a; font-size: 18px; padding-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NEON SNAKE</h1>
+  <div class="sub">ONE PROMPT &middot; ONE GAME &middot; BUILT BY AN AI AGENT</div>
+</header>
+<div class="hud">
+  <div><span class="label">SCORE</span> <span id="score">0</span></div>
+  <div><span class="label">BEST</span> <span id="best">0</span></div>
+</div>
+<div id="stage">
+  <canvas id="game"></canvas>
+  <div id="overlay">
+    <h2 id="ov-title">NEON SNAKE</h2>
+    <p id="ov-text">Steer with arrow keys / WASD<br>or the buttons below.<br>Eat the glowing dots. Don't hit<br>the walls &mdash; or yourself.</p>
+    <p class="big" id="ov-action">Press SPACE or tap to start</p>
+  </div>
+</div>
+<div class="pad">
+  <button class="up" data-dir="up" aria-label="Up">&#9650;</button>
+  <button class="left" data-dir="left" aria-label="Left">&#9664;</button>
+  <button class="down" data-dir="down" aria-label="Down">&#9660;</button>
+  <button class="right" data-dir="right" aria-label="Right">&#9654;</button>
+</div>
+<footer>made by an AI agent for a $20 bounty on make.fun</footer>
+
+<script>
+"use strict";
+/*
+ * Neon Snake — a tiny browser game built from ONE prompt:
+ * "Build a tiny browser snake game in one HTML file: arrow keys or WASD to
+ * steer, on-screen arrow buttons for touch, eat the glowing dots to grow
+ * and score, hitting a wall or yourself ends the game, speed rises as you
+ * eat, show score and best score saved in localStorage, press R or tap to
+ * restart, dark neon style, works on a phone."
+ * Open with ?demo=1 for an autopilot that plays the game by itself.
+ */
+const COLS = 27, ROWS = 35;
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const scoreEl = document.getElementById("score");
+const bestEl = document.getElementById("best");
+const overlay = document.getElementById("overlay");
+const ovTitle = document.getElementById("ov-title");
+const ovText = document.getElementById("ov-text");
+const ovAction = document.getElementById("ov-action");
+
+let cell = 40, ox = 0, oy = 0;
+let snake, dir, pendingDir, food, score, best, speed, timer, state;
+const DEMO = new URLSearchParams(location.search).has("demo");
+
+try { best = Number(localStorage.getItem("neon-snake-best") || 0); }
+catch (e) { best = 0; }
+bestEl.textContent = best;
+
+function resize() {
+  const stage = document.getElementById("stage");
+  const w = stage.clientWidth, h = stage.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  cell = Math.floor(Math.min(w / COLS, h / ROWS));
+  ox = Math.floor((w - cell * COLS) / 2);
+  oy = Math.floor((h - cell * ROWS) / 2);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+window.addEventListener("resize", resize);
+
+function reset() {
+  const cy = Math.floor(ROWS / 2);
+  snake = [{ x: 8, y: cy }, { x: 7, y: cy }, { x: 6, y: cy }];
+  dir = { x: 1, y: 0 };
+  pendingDir = dir;
+  score = 0;
+  speed = 150;
+  scoreEl.textContent = "0";
+  placeFood();
+  state = "ready";
+}
+
+function placeFood() {
+  while (true) {
+    const f = {
+      x: Math.floor(Math.random() * COLS),
+      y: Math.floor(Math.random() * ROWS),
+    };
+    if (!snake.some((s) => s.x === f.x && s.y === f.y)) { food = f; return; }
+  }
+}
+
+function setDir(x, y) {
+  if (dir.x === -x && dir.y === -y) return; // no reversing into yourself
+  pendingDir = { x, y };
+}
+
+// Autopilot for demo/attract mode: chase the food, avoid walls and the body.
+function autopilot() {
+  const head = snake[0];
+  const options = [
+    { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+  ].filter((d) => !(dir.x === -d.x && dir.y === -d.y));
+  let bestMove = null, bestScore = -Infinity;
+  for (const d of options) {
+    const nx = head.x + d.x, ny = head.y + d.y;
+    if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+    // Don't run into the body (tail tip moves away, so ignore it).
+    if (snake.slice(0, -1).some((s) => s.x === nx && s.y === ny)) continue;
+    const dist = Math.abs(nx - food.x) + Math.abs(ny - food.y);
+    let s = -dist * 10;
+    if (nx === 0 || ny === 0 || nx === COLS - 1 || ny === ROWS - 1) s -= 3;
+    if (s > bestScore) { bestScore = s; bestMove = d; }
+  }
+  if (bestMove) setDir(bestMove.x, bestMove.y);
+}
+
+function tick() {
+  if (state !== "playing") return;
+  if (DEMO) autopilot();
+  dir = pendingDir;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  if (
+    head.x < 0 || head.y < 0 || head.x >= COLS || head.y >= ROWS ||
+    snake.some((s) => s.x === head.x && s.y === head.y)
+  ) { gameOver(); return; }
+  snake.unshift(head);
+  if (head.x === food.x && head.y === food.y) {
+    score += 10;
+    scoreEl.textContent = String(score);
+    if (score > best) {
+      best = score;
+      bestEl.textContent = String(best);
+      try { localStorage.setItem("neon-snake-best", String(best)); } catch (e) {}
+    }
+    speed = Math.max(70, 150 - Math.floor(score / 30) * 8);
+    placeFood();
+    clearInterval(timer);
+    timer = setInterval(tick, speed);
+  } else {
+    snake.pop();
+  }
+  draw();
+}
+
+function draw() {
+  const stage = document.getElementById("stage");
+  const w = stage.clientWidth, h = stage.clientHeight;
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, w, h);
+  // faint grid
+  ctx.strokeStyle = "rgba(255,255,255,0.04)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= COLS; x++) {
+    ctx.moveTo(ox + x * cell, oy); ctx.lineTo(ox + x * cell, oy + ROWS * cell);
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.moveTo(ox, oy + y * cell); ctx.lineTo(ox + COLS * cell, oy + y * cell);
+  }
+  ctx.stroke();
+  // border
+  ctx.strokeStyle = "#2c2c44";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(ox - 2, oy - 2, COLS * cell + 4, ROWS * cell + 4);
+  // food: glowing magenta dot
+  const fx = ox + food.x * cell + cell / 2, fy = oy + food.y * cell + cell / 2;
+  const glow = ctx.createRadialGradient(fx, fy, 2, fx, fy, cell);
+  glow.addColorStop(0, "rgba(255,79,216,0.9)");
+  glow.addColorStop(0.4, "rgba(255,79,216,0.35)");
+  glow.addColorStop(1, "rgba(255,79,216,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(fx - cell, fy - cell, cell * 2, cell * 2);
+  ctx.fillStyle = "#ff4fd8";
+  ctx.beginPath();
+  ctx.arc(fx, fy, cell * 0.32, 0, Math.PI * 2);
+  ctx.fill();
+  // snake: neon green, head brightest
+  snake.forEach((seg, i) => {
+    const px = ox + seg.x * cell, py = oy + seg.y * cell;
+    const t = 1 - i / snake.length;
+    ctx.fillStyle = i === 0 ? "#a4ffcb" : `rgba(57,255,136,${0.35 + 0.65 * t})`;
+    const pad = i === 0 ? 2 : 3;
+    const r = 7;
+    ctx.beginPath();
+    ctx.roundRect(px + pad, py + pad, cell - pad * 2, cell - pad * 2, r);
+    ctx.fill();
+  });
+  // eyes on the head
+  const hx = ox + snake[0].x * cell, hy = oy + snake[0].y * cell;
+  ctx.fillStyle = "#0a0a12";
+  const ex = dir.x, ey = dir.y;
+  const cx = hx + cell / 2, cy = hy + cell / 2;
+  const perp = { x: -ey, y: ex };
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx + ex * 8 + perp.x * 9 * s, cy + ey * 8 + perp.y * 9 * s, 3.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function start() {
+  if (state === "playing") return;
+  reset();
+  state = "playing";
+  overlay.classList.add("hidden");
+  clearInterval(timer);
+  timer = setInterval(tick, speed);
+  draw();
+}
+
+function gameOver() {
+  state = "over";
+  clearInterval(timer);
+  draw();
+  ovTitle.textContent = "GAME OVER";
+  ovText.innerHTML = "Score: <b style='color:#39ff88'>" + score + "</b> &nbsp;·&nbsp; Best: <b style='color:#ff4fd8'>" + best + "</b>";
+  ovAction.textContent = DEMO ? "Watching demo — restarting…" : "Press R or tap to play again";
+  overlay.classList.remove("hidden");
+  if (DEMO) setTimeout(start, 1600);
+}
+
+const KEYS = {
+  ArrowUp: [-0, -1], KeyW: [0, -1],
+  ArrowDown: [0, 1], KeyS: [0, 1],
+  ArrowLeft: [-1, 0], KeyA: [-1, 0],
+  ArrowRight: [1, 0], KeyD: [1, 0],
+};
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); start(); return; }
+  if (e.code === "KeyR") { start(); return; }
+  const d = KEYS[e.code];
+  if (d) { e.preventDefault(); if (state === "playing") setDir(d[0], d[1]); }
+});
+document.querySelectorAll(".pad button").forEach((b) => {
+  b.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (state !== "playing") { start(); return; }
+    const d = b.dataset.dir;
+    if (d === "up") setDir(0, -1);
+    if (d === "down") setDir(0, 1);
+    if (d === "left") setDir(-1, 0);
+    if (d === "right") setDir(1, 0);
+  });
+});
+canvas.addEventListener("pointerdown", () => { if (state !== "playing") start(); });
+overlay.addEventListener("pointerdown", () => { if (state !== "playing") start(); });
+
+reset();
+resize();
+if (DEMO) start();
+</script>
+</body>
+</html>
